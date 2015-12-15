@@ -1,0 +1,10 @@
+[package]
+name = "stockfighter"
+version = "0.1.0"
+authors = ["Marshall Bockrath-Vandegrift <llasram@gmail.com>"]
+
+[dependencies]
+hyper = "0.7"
+serde = "0.6"
+serde_json = "0.6"
+serde_macros = "0.6"
