@@ -9,12 +9,15 @@ extern crate serde_json;
 use std::convert::From;
 use std::error;
 use std::fmt;
+use std::io;
+use std::io::Read;
 use std::result;
 
 use chrono::{DateTime, UTC};
-use hyper::client::{Body, Client, RequestBuilder};
+use hyper::client::{Client, RequestBuilder, Response};
 use hyper::method::Method;
 use hyper::status::StatusCode;
+use serde::Deserialize;
 
 header! {
     (XStarfighterAuthorization, "X-Starfighter-Authorization") => [String]
@@ -22,6 +25,7 @@ header! {
 
 #[derive(Debug)]
 pub enum Error {
+    Io(io::Error),
     Hyper(hyper::Error),
     Json(serde_json::error::Error),
     Chrono(chrono::format::ParseError),
@@ -35,6 +39,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
+            Error::Io(ref err) => err.fmt(f),
             Error::Hyper(ref err) => err.fmt(f),
             Error::Json(ref err) => err.fmt(f),
             Error::Chrono(ref err) => err.fmt(f),
@@ -50,6 +55,7 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn description(&self) -> &str {
         match *self {
+            Error::Io(ref err) => err.description(),
             Error::Hyper(ref err) => err.description(),
             Error::Json(ref err) => err.description(),
             Error::Chrono(ref err) => err.description(),
@@ -63,11 +69,18 @@ impl error::Error for Error {
 
     fn cause(&self) -> Option<&error::Error> {
         match *self {
+            Error::Io(ref err) => Some(err),
             Error::Hyper(ref err) => Some(err),
             Error::Json(ref err) => Some(err),
             Error::Chrono(ref err) => Some(err),
             _ => None,
         }
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
     }
 }
 
@@ -93,10 +106,6 @@ pub type Result<T> = result::Result<T, Error>;
 
 static DEFAULT_API_URL: &'static str = "https://api.stockfighter.io/ob/api";
 
-fn error_str(error: Option<String>) -> String {
-    error.unwrap_or_else(|| "<unknown>".to_owned())
-}
-
 pub struct Api {
     url: String,
     token: String,
@@ -106,6 +115,36 @@ pub struct Api {
 impl fmt::Debug for Api {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Api {{ url: {:?}, token: {:?} }}", self.url, self.token)
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct ErrorResponse {
+    ok: bool,
+    error: String,
+}
+
+fn parse_error(body: &str) -> Result<String> {
+    let er: ErrorResponse = try!(serde_json::from_str(body));
+    Ok(er.error)
+}
+
+fn parse_response<T>(mut res: Response) -> Result<T> where T: Deserialize {
+    let status = res.status;
+    let mut body = String::new();
+    try!(res.read_to_string(&mut body));
+    match status {
+        StatusCode::Ok => serde_json::from_str(&body).map_err(|_| -> Error {
+            match parse_error(&body) {
+                Ok(error) => Error::Unknown(error),
+                Err(err) => Error::from(err),
+            }
+        }),
+        StatusCode::InternalServerError => Err(Error::Timeout(try!(parse_error(&body)))),
+        StatusCode::NotFound => Err(Error::NotFound(try!(parse_error(&body)))),
+        StatusCode::BadRequest => Err(Error::BadRequest(try!(parse_error(&body)))),
+        StatusCode::Unauthorized => Err(Error::Unauthorized(try!(parse_error(&body)))),
+        _ => Err(Error::Unknown(try!(parse_error(&body)))),
     }
 }
 
@@ -135,11 +174,11 @@ impl Api {
 
     pub fn heartbeat(&self) -> Result<()> {
         let res = try!(self.request(Method::Get, "heartbeat").send());
-        let status = res.status;
-        let hb: HeartbeatResponse = try!(serde_json::de::from_reader(res));
-        match (status, hb.ok) {
-            (StatusCode::Ok, true) => Ok(()),
-            _ => Err(Error::Unknown(error_str(hb.error))),
+        let hb: HeartbeatResponse = try!(parse_response(res));
+        match (hb.ok, hb.error) {
+            (false, Some(error)) => Err(Error::Unknown(error)),
+            (false, None) => Err(Error::Unknown("<unknown>".to_owned())),
+            (true, _) => Ok(()),
         }
     }
 
@@ -176,7 +215,7 @@ pub struct Venue<'a> {
 struct VenueHeartbeatResponse {
     ok: bool,
     error: Option<String>,
-    venue: Option<String>,
+    venue: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -189,7 +228,7 @@ struct VenueStockSymbol {
 struct VenueStocksResponse {
     ok: bool,
     error: Option<String>,
-    symbols: Option<Vec<VenueStockSymbol>>,
+    symbols: Vec<VenueStockSymbol>,
 }
 
 impl<'a> Venue<'a> {
@@ -209,32 +248,21 @@ impl<'a> Venue<'a> {
 
     pub fn heartbeat(&self) -> Result<()> {
         let res = try!(self.request(Method::Get, "heartbeat").send());
-        let status = res.status;
-        let hb: VenueHeartbeatResponse = try!(serde_json::de::from_reader(res));
-        let error = hb.error;
-        match (status, hb.ok) {
-            (StatusCode::Ok, true) => Ok(()),
-            (StatusCode::InternalServerError, false) => Err(Error::Timeout(error_str(error))),
-            (StatusCode::NotFound, false) => Err(Error::NotFound(error_str(error))),
-            _ => Err(Error::Unknown(error_str(error))),
+        let hb: VenueHeartbeatResponse = try!(parse_response(res));
+        match (hb.ok, hb.error) {
+            (false, Some(error)) => Err(Error::Unknown(error)),
+            (false, None) => Err(Error::Unknown("<unknown>".to_owned())),
+            (true, _) => Ok(()),
         }
     }
 
     pub fn stocks(&self) -> Result<Vec<Stock>> {
         let res = try!(self.request(Method::Get, "stocks").send());
-        let status = res.status;
-        let vs: VenueStocksResponse = try!(serde_json::de::from_reader(res));
-        let error = vs.error;
-        match (status, vs.ok, vs.symbols) {
-            (StatusCode::Ok, true, Some(symbols)) => {
-                let stocks = symbols.into_iter().map(|stock| {
-                    Stock { venue: self, symbol: stock.symbol, name: stock.name }
-                }).collect::<Vec<_>>();
-                Ok(stocks)
-            },
-            (StatusCode::NotFound, false, None) => Err(Error::NotFound(error_str(error))),
-            _ => Err(Error::Unknown(error_str(error))),
-        }
+        let vs: VenueStocksResponse = try!(parse_response(res));
+        let stocks = vs.symbols.into_iter().map(|stock| {
+            Stock { venue: self, symbol: stock.symbol, name: stock.name }
+        }).collect::<Vec<_>>();
+        Ok(stocks)
     }
 
     pub fn stock(&self, symbol: &str) -> Result<Stock> {
@@ -264,11 +292,11 @@ pub struct StockOrder {
 struct StockOrdersResponse {
     ok: bool,
     error: Option<String>,
-    ts: Option<String>,
-    venue: Option<String>,
-    symbol: Option<String>,
-    bids: Option<Vec<StockOrder>>,
-    asks: Option<Vec<StockOrder>>,
+    ts: String,
+    venue: String,
+    symbol: String,
+    bids: Vec<StockOrder>,
+    asks: Vec<StockOrder>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -328,18 +356,10 @@ impl<'a> Stock<'a> {
 
     pub fn orders(&self) -> Result<StockOrders> {
         let res = try!(self.request(Method::Get).send());
-        let status = res.status;
-        let so: StockOrdersResponse = try!(serde_json::de::from_reader(res));
-        let error = so.error;
-        match (status, so.ok, so.ts, so.bids, so.asks) {
-            (StatusCode::Ok, true, Some(ts), Some(bids), Some(asks)) => {
-                let ts = try!(ts.parse::<DateTime<UTC>>());
-                let orders = StockOrders { stock: self, ts: ts, bids: bids, asks: asks };
-                Ok(orders)
-            },
-            (StatusCode::NotFound, false, _, _, _) => Err(Error::NotFound(error_str(error))),
-            _ => Err(Error::Unknown(error_str(error))),
-        }
+        let so: StockOrdersResponse = try!(parse_response(res));
+        let ts = try!(so.ts.parse::<DateTime<UTC>>());
+        let orders = StockOrders { stock: self, ts: ts, bids: so.bids, asks: so.asks };
+        Ok(orders)
     }
 
     pub fn order(&self, price: u64, qty: u64, direction: Direction, order_type: OrderType)
