@@ -12,6 +12,7 @@ use std::fmt;
 use std::io;
 use std::io::Read;
 use std::result;
+use std::str::FromStr;
 
 use chrono::{DateTime, UTC};
 use hyper::client::{Client, RequestBuilder, Response};
@@ -242,7 +243,7 @@ impl<'a> Venue<'a> {
         format!("venues/{}/{}", self.name, url)
     }
 
-    fn request(&self, method:Method, url: &str) -> RequestBuilder {
+    fn request(&self, method: Method, url: &str) -> RequestBuilder {
         self.account.request(method, &self.url(url))
     }
 
@@ -314,6 +315,18 @@ impl Direction {
     }
 }
 
+impl FromStr for Direction {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Direction> {
+        match s {
+            "buy" => Ok(Direction::Buy),
+            "sell" => Ok(Direction::Sell),
+            _ => Err(Error::Unknown(format!("{}: invalid `direction`", s))),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum OrderType {
     Limit,
@@ -333,6 +346,20 @@ impl OrderType {
     }
 }
 
+impl FromStr for OrderType {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<OrderType> {
+        match s {
+            "limit" => Ok(OrderType::Limit),
+            "market" => Ok(OrderType::Market),
+            "fill-or-kill" => Ok(OrderType::FillOrKill),
+            "immediate-or-cancel" => Ok(OrderType::ImmediateOrCancel),
+            _ => Err(Error::Unknown(format!("{}: invalid `orderType`", s))),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct OrderRequest<'a> {
     pub account: &'a str,
@@ -346,16 +373,19 @@ pub struct OrderRequest<'a> {
 }
 
 impl<'a> Stock<'a> {
-    fn url(&self) -> String {
-        format!("stocks/{}", self.symbol)
+    fn url(&self, url: Option<&str>) -> String {
+        match url {
+            None => format!("stocks/{}", self.symbol),
+            Some(url) => format!("stocks/{}/{}", self.symbol, url),
+        }
     }
 
-    fn request(&self, method: Method) -> RequestBuilder {
-        self.venue.request(method, &self.url())
+    fn request(&self, method: Method, url: Option<&str>) -> RequestBuilder {
+        self.venue.request(method, &self.url(url))
     }
 
     pub fn orders(&self) -> Result<StockOrders> {
-        let res = try!(self.request(Method::Get).send());
+        let res = try!(self.request(Method::Get, None).send());
         let so: StockOrdersResponse = try!(parse_response(res));
         let ts = try!(so.ts.parse::<DateTime<UTC>>());
         let orders = StockOrders { stock: self, ts: ts, bids: so.bids, asks: so.asks };
@@ -364,16 +394,20 @@ impl<'a> Stock<'a> {
 
     pub fn order(&self, price: u64, qty: u64, direction: Direction, order_type: OrderType)
                  -> Result<OrderStatus> {
+        let account = &self.venue.account.name;
+        let venue = &self.venue.name;
+        let stock = &self.symbol;
         let direction = direction.as_str();
         let order_type = order_type.as_str();
         let req = OrderRequest {
-            account: &self.venue.account.name, venue: &self.venue.name, stock: &self.name,
-            price: price, qty: qty, direction: direction, order_type: order_type,
+            account: account, venue: venue, stock: stock, price: price, qty: qty,
+            direction: direction, order_type: order_type,
         };
         let req = try!(serde_json::to_string(&req));
-        let res = try!(self.request(Method::Post).body(&*req).send());
-        let status = res.status;
-        Ok(OrderStatus)
+        let res = try!(self.request(Method::Post, Some("orders")).body(&*req).send());
+        let os: OrderStatusResponse = try!(parse_response(res));
+        let status = try!(OrderStatus::new(self, os));
+        Ok(status)
     }
 }
 
@@ -402,7 +436,7 @@ struct OrderStatusResponse {
     original_qty: u64,
     qty: u64,
     price: u64,
-    #[serde(rename="type")]
+    #[serde(rename="orderType")]
     order_type: String,
     id: u64,
     account: String,
@@ -413,13 +447,61 @@ struct OrderStatusResponse {
     open: bool,
 }
 
-pub struct OrderStatus;
+#[derive(Debug, Clone, Copy)]
+pub struct Fill {
+    pub price: u64,
+    pub qty: u64,
+    pub ts: DateTime<UTC>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderStatus<'a> {
+    pub stock: &'a Stock<'a>,
+    pub direction: Direction,
+    pub original_qty: u64,
+    pub qty: u64,
+    pub price: u64,
+    pub order_type: OrderType,
+    pub id: u64,
+    pub ts: DateTime<UTC>,
+    pub fills: Vec<Fill>,
+    pub total_filled: u64,
+    pub open: bool,
+}
+
+impl<'a> OrderStatus<'a> {
+    fn new(stock: &'a Stock, os: OrderStatusResponse) -> Result<Self> {
+        assert_eq!(stock.symbol, os.symbol);
+        assert_eq!(stock.venue.name, os.venue);
+        assert_eq!(stock.venue.account.name, os.account);
+        let mut fills = Vec::with_capacity(os.fills.len());
+        for f in os.fills.into_iter() {
+            let ts = try!(f.ts.parse::<DateTime<UTC>>());
+            let fill = Fill { price: f.price, qty: f.qty, ts: ts };
+            fills.push(fill);
+        }
+        let status = OrderStatus {
+            stock: stock,
+            direction: try!(os.direction.parse::<Direction>()),
+            original_qty: os.original_qty,
+            qty: os.qty,
+            price: os.price,
+            order_type: try!(os.order_type.parse::<OrderType>()),
+            id: os.id,
+            ts: try!(os.ts.parse::<DateTime<UTC>>()),
+            fills: fills,
+            total_filled: os.total_filled,
+            open: os.open,
+        };
+        Ok(status)
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    static TOKEN: &'static str = "37610898fa294d2f71e8c42072c39626d90a2c40";
+    static TOKEN: &'static str = "1193b20a8167398943e7bf22572e480fef59da47";
 
     #[test]
     fn test_heartbeat() {
@@ -451,8 +533,17 @@ mod tests {
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();
         let stock = venue.stock("FOOBAR").unwrap();
-        let orders = stock.orders().unwrap();
-        assert!(0 < orders.bids.len());
-        assert!(0 < orders.asks.len());
+        let orders = stock.orders();
+        assert!(orders.is_ok());
+    }
+
+    #[test]
+    fn test_stock_new_order() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let status = stock.order(100, 10, Direction::Buy, OrderType::Limit).unwrap();
+        assert_eq!(10, status.original_qty);
     }
 }
