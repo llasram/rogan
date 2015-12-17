@@ -335,7 +335,7 @@ impl<'a> Stock<'a> {
     }
 
     pub fn order(&self, price: u64, qty: u64, direction: Direction, order_type: OrderType)
-                 -> Result<OrderStatus> {
+                 -> Result<Order> {
         let req = request::Order {
             account: &self.venue.account.name,
             venue: &self.venue.name,
@@ -348,8 +348,8 @@ impl<'a> Stock<'a> {
         let req = try!(serde_json::to_string(&req));
         let res = try!(self.request(Method::Post, Some("orders")).body(&*req).send());
         let os: response::OrderStatus = try!(parse_response(res));
-        let status = try!(OrderStatus::new(self, os));
-        Ok(status)
+        let order = try!(Order::new(self, os));
+        Ok(order)
     }
 
     pub fn quote(&self) -> Result<Quote> {
@@ -376,7 +376,7 @@ pub struct Fill {
 }
 
 #[derive(Debug, Clone)]
-pub struct OrderStatus<'a> {
+pub struct Order<'a> {
     pub stock: &'a Stock<'a>,
     pub direction: Direction,
     pub original_qty: u64,
@@ -390,7 +390,7 @@ pub struct OrderStatus<'a> {
     pub open: bool,
 }
 
-impl<'a> OrderStatus<'a> {
+impl<'a> Order<'a> {
     fn new(stock: &'a Stock, os: response::OrderStatus) -> Result<Self> {
         assert_eq!(stock.symbol, os.symbol);
         assert_eq!(stock.venue.name, os.venue);
@@ -401,7 +401,7 @@ impl<'a> OrderStatus<'a> {
             let fill = Fill { price: f.price, qty: f.qty, ts: ts };
             fills.push(fill);
         }
-        let status = OrderStatus {
+        let order = Order {
             stock: stock,
             direction: try!(os.direction.parse::<Direction>()),
             original_qty: os.original_qty,
@@ -414,7 +414,25 @@ impl<'a> OrderStatus<'a> {
             total_filled: os.total_filled,
             open: os.open,
         };
-        Ok(status)
+        Ok(order)
+    }
+
+    fn url(&self, url: Option<&str>) -> String {
+        match url {
+            None => format!("orders/{}", self.id),
+            Some(url) => format!("orders/{}/{}", self.id, url),
+        }
+    }
+
+    fn request(&self, method: Method, url: Option<&str>) -> RequestBuilder {
+        self.stock.request(method, Some(&self.url(url)))
+    }
+
+    pub fn updated(&self) -> Result<Self> {
+        let res = try!(self.request(Method::Get, None).send());
+        let os: response::OrderStatus = try!(parse_response(res));
+        let order = try!(Order::new(self.stock, os));
+        Ok(order)
     }
 }
 
@@ -503,8 +521,8 @@ mod tests {
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();
         let stock = venue.stock("FOOBAR").unwrap();
-        let status = stock.order(100, 10, Direction::Buy, OrderType::Limit).unwrap();
-        assert_eq!(10, status.original_qty);
+        let order = stock.order(100, 10, Direction::Buy, OrderType::Limit).unwrap();
+        assert_eq!(10, order.original_qty);
     }
 
     #[test]
@@ -515,5 +533,16 @@ mod tests {
         let stock = venue.stock("FOOBAR").unwrap();
         let quote = stock.quote();
         assert!(quote.is_ok());
+    }
+
+    #[test]
+    fn test_stock_order_updated() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let order1 = stock.order(100, 10, Direction::Buy, OrderType::Limit).unwrap();
+        let order2 = order1.updated().unwrap();
+        assert!(order1.ts <= order2.ts);
     }
 }
