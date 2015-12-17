@@ -372,6 +372,21 @@ pub struct OrderRequest<'a> {
     pub order_type: &'static str,
 }
 
+impl<'a> OrderRequest<'a> {
+    fn new(stock: &'a Stock, price: u64, qty: u64, direction: Direction, order_type: OrderType)
+           -> OrderRequest<'a> {
+        OrderRequest {
+            account: &stock.venue.account.name,
+            venue: &stock.venue.name,
+            stock: &stock.symbol,
+            price: price,
+            qty: qty,
+            direction: direction.as_str(),
+            order_type: order_type.as_str(),
+        }
+    }
+}
+
 impl<'a> Stock<'a> {
     fn url(&self, url: Option<&str>) -> String {
         match url {
@@ -394,20 +409,19 @@ impl<'a> Stock<'a> {
 
     pub fn order(&self, price: u64, qty: u64, direction: Direction, order_type: OrderType)
                  -> Result<OrderStatus> {
-        let account = &self.venue.account.name;
-        let venue = &self.venue.name;
-        let stock = &self.symbol;
-        let direction = direction.as_str();
-        let order_type = order_type.as_str();
-        let req = OrderRequest {
-            account: account, venue: venue, stock: stock, price: price, qty: qty,
-            direction: direction, order_type: order_type,
-        };
+        let req = OrderRequest::new(self, price, qty, direction, order_type);
         let req = try!(serde_json::to_string(&req));
         let res = try!(self.request(Method::Post, Some("orders")).body(&*req).send());
         let os: OrderStatusResponse = try!(parse_response(res));
         let status = try!(OrderStatus::new(self, os));
         Ok(status)
+    }
+
+    pub fn quote(&self) -> Result<Quote> {
+        let res = try!(self.request(Method::Get, Some("quote")).send());
+        let res: QuoteResponse = try!(parse_response(res));
+        let quote = try!(Quote::new(self, res));
+        Ok(quote)
     }
 }
 
@@ -429,6 +443,7 @@ struct FillResponse {
 #[derive(Debug, Deserialize)]
 struct OrderStatusResponse {
     ok: bool,
+    error: Option<String>,
     symbol: String,
     venue: String,
     direction: String,
@@ -445,6 +460,31 @@ struct OrderStatusResponse {
     #[serde(rename="totalFilled")]
     total_filled: u64,
     open: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuoteResponse {
+    ok: bool,
+    error: Option<String>,
+    symbol: String,
+    venue: String,
+    bid: Option<u64>,
+    ask: Option<u64>,
+    #[serde(rename="bidSize")]
+    bid_size: u64,
+    #[serde(rename="askSize")]
+    ask_size: u64,
+    #[serde(rename="bidDepth")]
+    bid_depth: u64,
+    #[serde(rename="askDepth")]
+    ask_depth: u64,
+    last: Option<u64>,
+    #[serde(rename="lastSize")]
+    last_size: Option<u64>,
+    #[serde(rename="lastTrade")]
+    last_trade: Option<String>,
+    #[serde(rename="quoteTime")]
+    quote_time: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -497,6 +537,45 @@ impl<'a> OrderStatus<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct QuoteState {
+    pub price: Option<u64>,
+    pub size: u64,
+    pub depth: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Quote<'a> {
+    stock: &'a Stock<'a>,
+    ts: DateTime<UTC>,
+    bid: QuoteState,
+    ask: QuoteState,
+    last: Option<Fill>,
+}
+
+impl<'a> Quote<'a> {
+    fn new(stock: &'a Stock, res: QuoteResponse) -> Result<Quote<'a>> {
+        assert_eq!(stock.symbol, res.symbol);
+        assert_eq!(stock.venue.name, res.venue);
+        let ts = try!(res.quote_time.parse::<DateTime<UTC>>());
+        let last = match (res.last, res.last_size, res.last_trade) {
+            (Some(price), Some(qty), Some(ts)) => {
+                let ts = try!(ts.parse::<DateTime<UTC>>());
+                let fill = Fill { price: price, qty: qty, ts: ts };
+                Some(fill)
+            }
+            (None, None, None) => None,
+            _ => return Err(Error::Unknown("inconsistent last-trade state".to_owned())),
+        };
+        let quote = Quote {
+            stock: stock, ts: ts, last: last,
+            bid: QuoteState { price: res.bid, size: res.bid_size, depth: res.bid_depth },
+            ask: QuoteState { price: res.ask, size: res.ask_size, depth: res.ask_depth },
+        };
+        Ok(quote)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +624,15 @@ mod tests {
         let stock = venue.stock("FOOBAR").unwrap();
         let status = stock.order(100, 10, Direction::Buy, OrderType::Limit).unwrap();
         assert_eq!(10, status.original_qty);
+    }
+
+    #[test]
+    fn test_stock_quote() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let quote = stock.quote();
+        assert!(quote.is_ok());
     }
 }
