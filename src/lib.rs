@@ -6,6 +6,9 @@ extern crate chrono;
 extern crate serde;
 extern crate serde_json;
 
+mod request;
+mod response;
+
 use std::convert::From;
 use std::error;
 use std::fmt;
@@ -19,6 +22,8 @@ use hyper::client::{Client, RequestBuilder, Response};
 use hyper::method::Method;
 use hyper::status::StatusCode;
 use serde::Deserialize;
+
+pub use response::StockOrder;
 
 header! {
     (XStarfighterAuthorization, "X-Starfighter-Authorization") => [String]
@@ -119,14 +124,8 @@ impl fmt::Debug for Api {
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct ErrorResponse {
-    ok: bool,
-    error: String,
-}
-
 fn parse_error(body: &str) -> Result<String> {
-    let er: ErrorResponse = try!(serde_json::from_str(body));
+    let er: response::Error = try!(serde_json::from_str(body));
     Ok(er.error)
 }
 
@@ -149,12 +148,6 @@ fn parse_response<T>(mut res: Response) -> Result<T> where T: Deserialize {
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct HeartbeatResponse {
-    ok: bool,
-    error: Option<String>,
-}
-
 impl Api {
     pub fn new(token: &str) -> Self {
         Api {
@@ -175,7 +168,7 @@ impl Api {
 
     pub fn heartbeat(&self) -> Result<()> {
         let res = try!(self.request(Method::Get, "heartbeat").send());
-        let hb: HeartbeatResponse = try!(parse_response(res));
+        let hb: response::Heartbeat = try!(parse_response(res));
         match (hb.ok, hb.error) {
             (false, Some(error)) => Err(Error::Unknown(error)),
             (false, None) => Err(Error::Unknown("<unknown>".to_owned())),
@@ -212,26 +205,6 @@ pub struct Venue<'a> {
     pub name: String,
 }
 
-#[derive(Deserialize, Debug)]
-struct VenueHeartbeatResponse {
-    ok: bool,
-    error: Option<String>,
-    venue: String,
-}
-
-#[derive(Deserialize, Debug)]
-struct VenueStockSymbol {
-    symbol: String,
-    name: String,
-}
-
-#[derive(Deserialize, Debug)]
-struct VenueStocksResponse {
-    ok: bool,
-    error: Option<String>,
-    symbols: Vec<VenueStockSymbol>,
-}
-
 impl<'a> Venue<'a> {
     fn new(account: &'a Account, name: &str) -> Result<Self> {
         let venue = Venue { account: account, name: name.to_owned() };
@@ -249,7 +222,7 @@ impl<'a> Venue<'a> {
 
     pub fn heartbeat(&self) -> Result<()> {
         let res = try!(self.request(Method::Get, "heartbeat").send());
-        let hb: VenueHeartbeatResponse = try!(parse_response(res));
+        let hb: response::VenueHeartbeat = try!(parse_response(res));
         match (hb.ok, hb.error) {
             (false, Some(error)) => Err(Error::Unknown(error)),
             (false, None) => Err(Error::Unknown("<unknown>".to_owned())),
@@ -259,7 +232,7 @@ impl<'a> Venue<'a> {
 
     pub fn stocks(&self) -> Result<Vec<Stock>> {
         let res = try!(self.request(Method::Get, "stocks").send());
-        let vs: VenueStocksResponse = try!(parse_response(res));
+        let vs: response::VenueStocks = try!(parse_response(res));
         let stocks = vs.symbols.into_iter().map(|stock| {
             Stock { venue: self, symbol: stock.symbol, name: stock.name }
         }).collect::<Vec<_>>();
@@ -279,25 +252,6 @@ pub struct Stock<'a> {
     pub venue: &'a Venue<'a>,
     pub symbol: String,
     pub name: String,
-}
-
-#[derive(Deserialize, Debug, Copy, Clone)]
-pub struct StockOrder {
-    pub price: u64,
-    pub qty: u64,
-    #[serde(rename="isBuy")]
-    pub is_buy: bool,
-}
-
-#[derive(Deserialize, Debug)]
-struct StockOrdersResponse {
-    ok: bool,
-    error: Option<String>,
-    ts: String,
-    venue: String,
-    symbol: String,
-    bids: Vec<StockOrder>,
-    asks: Vec<StockOrder>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -360,33 +314,6 @@ impl FromStr for OrderType {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct OrderRequest<'a> {
-    pub account: &'a str,
-    pub venue: &'a str,
-    pub stock: &'a str,
-    pub price: u64,
-    pub qty: u64,
-    pub direction: &'static str,
-    #[serde(rename="orderType")]
-    pub order_type: &'static str,
-}
-
-impl<'a> OrderRequest<'a> {
-    fn new(stock: &'a Stock, price: u64, qty: u64, direction: Direction, order_type: OrderType)
-           -> OrderRequest<'a> {
-        OrderRequest {
-            account: &stock.venue.account.name,
-            venue: &stock.venue.name,
-            stock: &stock.symbol,
-            price: price,
-            qty: qty,
-            direction: direction.as_str(),
-            order_type: order_type.as_str(),
-        }
-    }
-}
-
 impl<'a> Stock<'a> {
     fn url(&self, url: Option<&str>) -> String {
         match url {
@@ -401,7 +328,7 @@ impl<'a> Stock<'a> {
 
     pub fn orders(&self) -> Result<StockOrders> {
         let res = try!(self.request(Method::Get, None).send());
-        let so: StockOrdersResponse = try!(parse_response(res));
+        let so: response::StockOrders = try!(parse_response(res));
         let ts = try!(so.ts.parse::<DateTime<UTC>>());
         let orders = StockOrders { stock: self, ts: ts, bids: so.bids, asks: so.asks };
         Ok(orders)
@@ -409,17 +336,25 @@ impl<'a> Stock<'a> {
 
     pub fn order(&self, price: u64, qty: u64, direction: Direction, order_type: OrderType)
                  -> Result<OrderStatus> {
-        let req = OrderRequest::new(self, price, qty, direction, order_type);
+        let req = request::Order {
+            account: &self.venue.account.name,
+            venue: &self.venue.name,
+            stock: &self.symbol,
+            price: price,
+            qty: qty,
+            direction: direction.as_str(),
+            order_type: order_type.as_str(),
+        };
         let req = try!(serde_json::to_string(&req));
         let res = try!(self.request(Method::Post, Some("orders")).body(&*req).send());
-        let os: OrderStatusResponse = try!(parse_response(res));
+        let os: response::OrderStatus = try!(parse_response(res));
         let status = try!(OrderStatus::new(self, os));
         Ok(status)
     }
 
     pub fn quote(&self) -> Result<Quote> {
         let res = try!(self.request(Method::Get, Some("quote")).send());
-        let res: QuoteResponse = try!(parse_response(res));
+        let res: response::Quote = try!(parse_response(res));
         let quote = try!(Quote::new(self, res));
         Ok(quote)
     }
@@ -431,60 +366,6 @@ pub struct StockOrders<'a> {
     pub ts: DateTime<UTC>,
     pub bids: Vec<StockOrder>,
     pub asks: Vec<StockOrder>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FillResponse {
-    price: u64,
-    qty: u64,
-    ts: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct OrderStatusResponse {
-    ok: bool,
-    error: Option<String>,
-    symbol: String,
-    venue: String,
-    direction: String,
-    #[serde(rename="originalQty")]
-    original_qty: u64,
-    qty: u64,
-    price: u64,
-    #[serde(rename="orderType")]
-    order_type: String,
-    id: u64,
-    account: String,
-    ts: String,
-    fills: Vec<FillResponse>,
-    #[serde(rename="totalFilled")]
-    total_filled: u64,
-    open: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct QuoteResponse {
-    ok: bool,
-    error: Option<String>,
-    symbol: String,
-    venue: String,
-    bid: Option<u64>,
-    ask: Option<u64>,
-    #[serde(rename="bidSize")]
-    bid_size: u64,
-    #[serde(rename="askSize")]
-    ask_size: u64,
-    #[serde(rename="bidDepth")]
-    bid_depth: u64,
-    #[serde(rename="askDepth")]
-    ask_depth: u64,
-    last: Option<u64>,
-    #[serde(rename="lastSize")]
-    last_size: Option<u64>,
-    #[serde(rename="lastTrade")]
-    last_trade: Option<String>,
-    #[serde(rename="quoteTime")]
-    quote_time: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -510,7 +391,7 @@ pub struct OrderStatus<'a> {
 }
 
 impl<'a> OrderStatus<'a> {
-    fn new(stock: &'a Stock, os: OrderStatusResponse) -> Result<Self> {
+    fn new(stock: &'a Stock, os: response::OrderStatus) -> Result<Self> {
         assert_eq!(stock.symbol, os.symbol);
         assert_eq!(stock.venue.name, os.venue);
         assert_eq!(stock.venue.account.name, os.account);
@@ -554,7 +435,7 @@ pub struct Quote<'a> {
 }
 
 impl<'a> Quote<'a> {
-    fn new(stock: &'a Stock, res: QuoteResponse) -> Result<Quote<'a>> {
+    fn new(stock: &'a Stock, res: response::Quote) -> Result<Quote<'a>> {
         assert_eq!(stock.symbol, res.symbol);
         assert_eq!(stock.venue.name, res.venue);
         let ts = try!(res.quote_time.parse::<DateTime<UTC>>());
