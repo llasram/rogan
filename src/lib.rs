@@ -428,11 +428,18 @@ impl<'a> Order<'a> {
         self.stock.request(method, Some(&self.url(url)))
     }
 
-    pub fn updated(&self) -> Result<Self> {
+    pub fn update(&mut self) -> Result<()> {
         let res = try!(self.request(Method::Get, None).send());
         let os: response::OrderStatus = try!(parse_response(res));
-        let order = try!(Order::new(self.stock, os));
-        Ok(order)
+        *self = try!(Order::new(self.stock, os));
+        Ok(())
+    }
+
+    pub fn cancel(&mut self) -> Result<()> {
+        let res = try!(self.request(Method::Delete, None).send());
+        let os: response::OrderStatus = try!(parse_response(res));
+        *self = try!(Order::new(self.stock, os));
+        Ok(())
     }
 }
 
@@ -536,13 +543,26 @@ mod tests {
     }
 
     #[test]
-    fn test_stock_order_updated() {
+    fn test_stock_order_update() {
         let api = Api::new(TOKEN);
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();
         let stock = venue.stock("FOOBAR").unwrap();
-        let order1 = stock.order(100, 10, Direction::Buy, OrderType::Limit).unwrap();
-        let order2 = order1.updated().unwrap();
-        assert!(order1.ts <= order2.ts);
+        let mut order = stock.order(100, 10, Direction::Buy, OrderType::Limit).unwrap();
+        let ts1 = order.ts.clone();
+        assert!(order.update().is_ok());
+        assert!(ts1 <= order.ts);
+    }
+
+    #[test]
+    fn test_stock_order_cancel() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let mut order = stock.order(100, 10, Direction::Buy, OrderType::Limit).unwrap();
+        assert!(order.open);
+        assert!(order.cancel().is_ok());
+        assert!(!order.open);
     }
 }
