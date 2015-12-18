@@ -16,6 +16,7 @@ use std::error;
 use std::fmt;
 use std::io;
 use std::io::Read;
+use std::mem;
 use std::result;
 use std::str::FromStr;
 
@@ -25,7 +26,6 @@ use hyper::method::Method;
 use hyper::status::StatusCode;
 use serde::Deserialize;
 use websocket::{Message, Sender, Receiver};
-use websocket::result::WebSocketResult;
 use websocket::message::Type as MessageType;
 
 pub use response::StockOrderbook;
@@ -538,14 +538,13 @@ impl<'a> Quote<'a> {
     }
 }
 
-type WebSocketClient = websocket::client::Client<
-    websocket::dataframe::DataFrame,
-    websocket::client::sender::Sender<websocket::stream::WebSocketStream>,
-    websocket::client::receiver::Receiver<websocket::stream::WebSocketStream>>;
+type WebSocketReceiver = websocket::client::receiver::Receiver<websocket::stream::WebSocketStream>;
+type WebSocketSender = websocket::client::sender::Sender<websocket::stream::WebSocketStream>;
 
 pub struct QuotesIter<'a> {
     venue: &'a Venue<'a>,
-    client: WebSocketClient,
+    receiver: Option<WebSocketReceiver>,
+    sender: WebSocketSender,
 }
 
 impl<'a> QuotesIter<'a> {
@@ -555,28 +554,25 @@ impl<'a> QuotesIter<'a> {
         let res = try!(req.send());
         try!(res.validate());
         let client = res.begin();
-        let iter = QuotesIter { venue: venue, client: client };
+        let (sender, receiver) = client.split();
+        let iter = QuotesIter { venue: venue, receiver: Some(receiver), sender: sender };
         Ok(iter)
     }
 
-    fn send_message(&mut self, msg: &Message) -> WebSocketResult<()> {
-        let sender = self.client.get_mut_sender();
-        sender.send_message(msg)
+    fn receiver(&mut self) -> &mut WebSocketReceiver {
+        self.receiver.as_mut().unwrap()
     }
 
     fn recv_quote(&mut self) -> Result<Option<Quote<'a>>> {
         loop {
-            let msg: Message = {
-                let receiver = self.client.get_mut_reciever();
-                try!(receiver.recv_message())
-            };
+            let msg: Message = try!(self.receiver().recv_message());
             match msg.opcode {
                 MessageType::Close => {
-                    try!(self.send_message(&Message::close()));
+                    try!(self.sender.send_message(&Message::close()));
                     return Ok(None);
                 },
                 MessageType::Ping => {
-                    try!(self.send_message(&Message::pong(msg.payload)));
+                    try!(self.sender.send_message(&Message::pong(msg.payload)));
                 },
                 MessageType::Text => {
                     let payload: &[u8] = msg.payload.borrow();
@@ -599,6 +595,13 @@ impl<'a> Iterator for QuotesIter<'a> {
             Ok(Some(quote)) => Some(Ok(quote)),
             Err(err) => Some(Err(err)),
         }
+    }
+}
+
+impl<'a> Drop for QuotesIter<'a> {
+    fn drop(&mut self) {
+        let receiver = mem::replace(&mut self.receiver, None);
+        mem::forget(receiver);
     }
 }
 
@@ -715,7 +718,6 @@ mod tests {
         let api = Api::new(TOKEN);
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();
-        let ticker = venue.ticker_tape();
-        assert!(ticker.is_ok());
+        let _ticker = venue.ticker_tape().unwrap();
     }
 }
