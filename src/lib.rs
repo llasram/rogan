@@ -23,7 +23,7 @@ use hyper::method::Method;
 use hyper::status::StatusCode;
 use serde::Deserialize;
 
-pub use response::StockOrder;
+pub use response::StockOrderbook;
 
 header! {
     (XStarfighterAuthorization, "X-Starfighter-Authorization") => [String]
@@ -326,11 +326,11 @@ impl<'a> Stock<'a> {
         self.venue.request(method, &self.url(url))
     }
 
-    pub fn orders(&self) -> Result<StockOrders> {
+    pub fn orderbook(&self) -> Result<Orderbook> {
         let res = try!(self.request(Method::Get, None).send());
-        let so: response::StockOrders = try!(parse_response(res));
+        let so: response::Orderbook = try!(parse_response(res));
         let ts = try!(so.ts.parse::<DateTime<UTC>>());
-        let orders = StockOrders { stock: self, ts: ts, bids: so.bids, asks: so.asks };
+        let orders = Orderbook { stock: self, ts: ts, bids: so.bids, asks: so.asks };
         Ok(orders)
     }
 
@@ -361,11 +361,11 @@ impl<'a> Stock<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct StockOrders<'a> {
+pub struct Orderbook<'a> {
     pub stock: &'a Stock<'a>,
     pub ts: DateTime<UTC>,
-    pub bids: Vec<StockOrder>,
-    pub asks: Vec<StockOrder>,
+    pub bids: Vec<StockOrderbook>,
+    pub asks: Vec<StockOrderbook>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -518,8 +518,8 @@ mod tests {
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();
         let stock = venue.stock("FOOBAR").unwrap();
-        let orders = stock.orders();
-        assert!(orders.is_ok());
+        let book = stock.orderbook();
+        assert!(book.is_ok());
     }
 
     #[test]

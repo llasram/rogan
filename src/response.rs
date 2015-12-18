@@ -31,7 +31,7 @@ pub struct VenueStocks {
 }
 
 #[derive(Deserialize, Debug, Copy, Clone)]
-pub struct StockOrder {
+pub struct StockOrderbook {
     pub price: u64,
     pub qty: u64,
     #[serde(rename="isBuy")]
@@ -39,14 +39,14 @@ pub struct StockOrder {
 }
 
 #[derive(Deserialize, Debug)]
-pub struct StockOrders {
+pub struct Orderbook {
     pub ok: bool,
     pub error: Option<String>,
     pub ts: String,
     pub venue: String,
     pub symbol: String,
-    pub bids: Vec<StockOrder>,
-    pub asks: Vec<StockOrder>,
+    pub bids: Vec<StockOrderbook>,
+    pub asks: Vec<StockOrderbook>,
 }
 
 #[derive(Debug, Deserialize)]
