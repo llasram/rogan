@@ -5,6 +5,7 @@ extern crate chrono;
 #[macro_use] extern crate hyper;
 extern crate serde;
 extern crate serde_json;
+extern crate websocket;
 
 mod request;
 mod response;
@@ -374,7 +375,7 @@ impl<'a> Stock<'a> {
     pub fn quote(&self) -> Result<Quote> {
         let res = try!(self.request(Method::Get, false, Some("quote")).send());
         let res: response::Quote = try!(parse_response(res));
-        let quote = try!(Quote::new(self, res));
+        let quote = try!(Quote::new(self.venue, res));
         Ok(quote)
     }
 
@@ -482,17 +483,17 @@ pub struct QuoteState {
 
 #[derive(Debug, Clone)]
 pub struct Quote<'a> {
-    stock: &'a Stock<'a>,
-    ts: DateTime<UTC>,
-    bid: QuoteState,
-    ask: QuoteState,
-    last: Option<Fill>,
+    pub venue: &'a Venue<'a>,
+    pub symbol: String,
+    pub ts: DateTime<UTC>,
+    pub bid: QuoteState,
+    pub ask: QuoteState,
+    pub last: Option<Fill>,
 }
 
 impl<'a> Quote<'a> {
-    fn new(stock: &'a Stock, res: response::Quote) -> Result<Quote<'a>> {
-        assert_eq!(stock.symbol, res.symbol);
-        assert_eq!(stock.venue.name, res.venue);
+    fn new(venue: &'a Venue, res: response::Quote) -> Result<Quote<'a>> {
+        assert_eq!(venue.name, res.venue);
         let ts = try!(res.quote_time.parse::<DateTime<UTC>>());
         let last = match (res.last, res.last_size, res.last_trade) {
             (Some(price), Some(qty), Some(ts)) => {
@@ -504,7 +505,7 @@ impl<'a> Quote<'a> {
             _ => return Err(Error::Unknown("inconsistent last-trade state".to_owned())),
         };
         let quote = Quote {
-            stock: stock, ts: ts, last: last,
+            venue: venue, symbol: res.symbol, ts: ts, last: last,
             bid: QuoteState { price: res.bid, size: res.bid_size, depth: res.bid_depth },
             ask: QuoteState { price: res.ask, size: res.ask_size, depth: res.ask_depth },
         };
