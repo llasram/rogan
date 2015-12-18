@@ -133,7 +133,6 @@ fn parse_response<T>(mut res: Response) -> Result<T> where T: Deserialize {
     let status = res.status;
     let mut body = String::new();
     try!(res.read_to_string(&mut body));
-    println!("{}", body);
     match status {
         StatusCode::Ok => serde_json::from_str(&body).map_err(|_| -> Error {
             match parse_error(&body) {
@@ -218,7 +217,7 @@ impl<'a> Venue<'a> {
         let account = &self.account.name;
         match with_account {
             false => format!("venues/{}/{}", venue, url),
-            true => format!("venues/{}/account/{}/{}", venue, account, url),
+            true => format!("venues/{}/accounts/{}/{}", venue, account, url),
         }
     }
 
@@ -250,6 +249,16 @@ impl<'a> Venue<'a> {
         let name = "<unknown>".to_owned();
         let stock = Stock { venue: self, symbol: symbol, name: name };
         Ok(stock)
+    }
+
+    pub fn orders(&self) -> Result<Vec<Order>> {
+        let res = try!(self.request(Method::Get, true, "orders").send());
+        let res: response::OrderStatuses = try!(parse_response(res));
+        let mut orders = Vec::with_capacity(res.orders.len());
+        for status in res.orders.into_iter() {
+            orders.push(try!(Order::new(self, status)));
+        }
+        Ok(orders)
     }
 }
 
@@ -585,6 +594,18 @@ mod tests {
         assert!(order.open);
         assert!(order.cancel().is_ok());
         assert!(!order.open);
+    }
+
+    #[test]
+    fn test_venue_orders() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let order = stock.order(100, 10, Direction::Buy, OrderType::Limit);
+        assert!(order.is_ok());
+        let orders = venue.orders().unwrap();
+        assert!(0 < orders.len());
     }
 
     #[test]
