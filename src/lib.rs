@@ -133,6 +133,7 @@ fn parse_response<T>(mut res: Response) -> Result<T> where T: Deserialize {
     let status = res.status;
     let mut body = String::new();
     try!(res.read_to_string(&mut body));
+    println!("{}", body);
     match status {
         StatusCode::Ok => serde_json::from_str(&body).map_err(|_| -> Error {
             match parse_error(&body) {
@@ -347,8 +348,8 @@ impl<'a> Stock<'a> {
         };
         let req = try!(serde_json::to_string(&req));
         let res = try!(self.request(Method::Post, Some("orders")).body(&*req).send());
-        let os: response::OrderStatus = try!(parse_response(res));
-        let order = try!(Order::new(self, os));
+        let res: response::OrderStatus = try!(parse_response(res));
+        let order = try!(Order::new(self, res));
         Ok(order)
     }
 
@@ -357,6 +358,16 @@ impl<'a> Stock<'a> {
         let res: response::Quote = try!(parse_response(res));
         let quote = try!(Quote::new(self, res));
         Ok(quote)
+    }
+
+    pub fn orders(&self) -> Result<Vec<Order>> {
+        let res = try!(self.request(Method::Get, Some("orders")).send());
+        let res: response::OrderStatuses = try!(parse_response(res));
+        let mut orders = Vec::with_capacity(res.orders.len());
+        for status in res.orders.into_iter() {
+            orders.push(try!(Order::new(self, status)));
+        }
+        Ok(orders)
     }
 }
 
@@ -513,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stock_orders() {
+    fn test_stock_orderbook() {
         let api = Api::new(TOKEN);
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();

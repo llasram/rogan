@@ -102,3 +102,11 @@ pub struct Quote {
     #[serde(rename="quoteTime")]
     pub quote_time: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct OrderStatuses {
+    pub ok: bool,
+    pub error: Option<String>,
+    pub venue: String,
+    pub orders: Vec<OrderStatus>,
+}
