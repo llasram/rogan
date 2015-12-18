@@ -10,6 +10,7 @@ extern crate websocket;
 mod request;
 mod response;
 
+use std::borrow::Borrow;
 use std::convert::From;
 use std::error;
 use std::fmt;
@@ -23,6 +24,9 @@ use hyper::client::{Client, RequestBuilder, Response};
 use hyper::method::Method;
 use hyper::status::StatusCode;
 use serde::Deserialize;
+use websocket::{Message, Sender, Receiver};
+use websocket::result::WebSocketResult;
+use websocket::message::Type as MessageType;
 
 pub use response::StockOrderbook;
 
@@ -36,6 +40,7 @@ pub enum Error {
     Hyper(hyper::Error),
     Json(serde_json::error::Error),
     Chrono(chrono::format::ParseError),
+    WebSocket(websocket::result::WebSocketError),
     Timeout(String),
     NotFound(String),
     BadRequest(String),
@@ -50,6 +55,7 @@ impl fmt::Display for Error {
             Error::Hyper(ref err) => err.fmt(f),
             Error::Json(ref err) => err.fmt(f),
             Error::Chrono(ref err) => err.fmt(f),
+            Error::WebSocket(ref err) => err.fmt(f),
             Error::Timeout(ref err) => write!(f, "Timeout: {}", err),
             Error::NotFound(ref err) => write!(f, "NotFound: {}", err),
             Error::BadRequest(ref err) => write!(f, "BadRequest: {}", err),
@@ -66,6 +72,7 @@ impl error::Error for Error {
             Error::Hyper(ref err) => err.description(),
             Error::Json(ref err) => err.description(),
             Error::Chrono(ref err) => err.description(),
+            Error::WebSocket(ref err) => err.description(),
             Error::Timeout(ref err) => err,
             Error::NotFound(ref err) => err,
             Error::BadRequest(ref err) => err,
@@ -80,6 +87,7 @@ impl error::Error for Error {
             Error::Hyper(ref err) => Some(err),
             Error::Json(ref err) => Some(err),
             Error::Chrono(ref err) => Some(err),
+            Error::WebSocket(ref err) => Some(err),
             _ => None,
         }
     }
@@ -109,9 +117,15 @@ impl From<chrono::format::ParseError> for Error {
     }
 }
 
+impl From<websocket::result::WebSocketError> for Error {
+    fn from(err: websocket::result::WebSocketError) -> Error {
+        Error::WebSocket(err)
+    }
+}
+
 pub type Result<T> = result::Result<T, Error>;
 
-static DEFAULT_API_URL: &'static str = "https://api.stockfighter.io/ob/api";
+static DEFAULT_API_URL: &'static str = "api.stockfighter.io/ob/api";
 
 pub struct Api {
     url: String,
@@ -159,7 +173,7 @@ impl Api {
     }
 
     fn url(&self, url: &str) -> String {
-        format!("{}/{}", self.url, url)
+        format!("https://{}/{}", self.url, url)
     }
 
     fn request(&self, method: Method, url: &str) -> RequestBuilder {
@@ -222,6 +236,13 @@ impl<'a> Venue<'a> {
         }
     }
 
+    fn ws_url(&self) -> String {
+        let base_url = &self.account.api.url;
+        let account = &self.account.name;
+        let venue = &self.name;
+        format!("wss://{}/ws/{}/venues/{}/tickertape", base_url, account, venue)
+    }
+
     fn request(&self, method: Method, with_account: bool, url: &str) -> RequestBuilder {
         self.account.request(method, &self.url(with_account, url))
     }
@@ -260,6 +281,10 @@ impl<'a> Venue<'a> {
             orders.push(try!(Order::new(self, status)));
         }
         Ok(orders)
+    }
+
+    pub fn ticker_tape(&self) -> Result<QuotesIter> {
+        QuotesIter::new(self, &self.ws_url())
     }
 }
 
@@ -513,6 +538,70 @@ impl<'a> Quote<'a> {
     }
 }
 
+type WebSocketClient = websocket::client::Client<
+    websocket::dataframe::DataFrame,
+    websocket::client::sender::Sender<websocket::stream::WebSocketStream>,
+    websocket::client::receiver::Receiver<websocket::stream::WebSocketStream>>;
+
+pub struct QuotesIter<'a> {
+    venue: &'a Venue<'a>,
+    client: WebSocketClient,
+}
+
+impl<'a> QuotesIter<'a> {
+    fn new(venue: &'a Venue, url: &str) -> Result<QuotesIter<'a>> {
+        let url =  websocket::client::request::Url::parse(url).unwrap();
+        let req = try!(websocket::Client::connect(url));
+        let res = try!(req.send());
+        try!(res.validate());
+        let client = res.begin();
+        let iter = QuotesIter { venue: venue, client: client };
+        Ok(iter)
+    }
+
+    fn send_message(&mut self, msg: &Message) -> WebSocketResult<()> {
+        let sender = self.client.get_mut_sender();
+        sender.send_message(msg)
+    }
+
+    fn recv_quote(&mut self) -> Result<Option<Quote<'a>>> {
+        loop {
+            let msg: Message = {
+                let receiver = self.client.get_mut_reciever();
+                try!(receiver.recv_message())
+            };
+            match msg.opcode {
+                MessageType::Close => {
+                    try!(self.send_message(&Message::close()));
+                    return Ok(None);
+                },
+                MessageType::Ping => {
+                    try!(self.send_message(&Message::pong(msg.payload)));
+                },
+                MessageType::Text => {
+                    let payload: &[u8] = msg.payload.borrow();
+                    let res: response::Quote = try!(serde_json::from_slice(payload));
+                    let quote = try!(Quote::new(self.venue, res));
+                    return Ok(Some(quote));
+                },
+                _ => (),
+            }
+        }
+    }
+}
+
+impl<'a> Iterator for QuotesIter<'a> {
+    type Item = Result<Quote<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.recv_quote() {
+            Ok(None) => None,
+            Ok(Some(quote)) => Some(Ok(quote)),
+            Err(err) => Some(Err(err)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,5 +708,14 @@ mod tests {
         assert!(order.is_ok());
         let orders = stock.orders().unwrap();
         assert!(0 < orders.len());
+    }
+
+    #[test]
+    fn test_venue_ticker_tape() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let ticker = venue.ticker_tape();
+        assert!(ticker.is_ok());
     }
 }
