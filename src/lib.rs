@@ -213,16 +213,21 @@ impl<'a> Venue<'a> {
         Ok(venue)
     }
 
-    fn url(&self, url: &str) -> String {
-        format!("venues/{}/{}", self.name, url)
+    fn url(&self, with_account: bool, url: &str) -> String {
+        let venue = &self.name;
+        let account = &self.account.name;
+        match with_account {
+            false => format!("venues/{}/{}", venue, url),
+            true => format!("venues/{}/account/{}/{}", venue, account, url),
+        }
     }
 
-    fn request(&self, method: Method, url: &str) -> RequestBuilder {
-        self.account.request(method, &self.url(url))
+    fn request(&self, method: Method, with_account: bool, url: &str) -> RequestBuilder {
+        self.account.request(method, &self.url(with_account, url))
     }
 
     pub fn heartbeat(&self) -> Result<()> {
-        let res = try!(self.request(Method::Get, "heartbeat").send());
+        let res = try!(self.request(Method::Get, false, "heartbeat").send());
         let hb: response::VenueHeartbeat = try!(parse_response(res));
         match (hb.ok, hb.error) {
             (false, Some(error)) => Err(Error::Unknown(error)),
@@ -232,7 +237,7 @@ impl<'a> Venue<'a> {
     }
 
     pub fn stocks(&self) -> Result<Vec<Stock>> {
-        let res = try!(self.request(Method::Get, "stocks").send());
+        let res = try!(self.request(Method::Get, false, "stocks").send());
         let vs: response::VenueStocks = try!(parse_response(res));
         let stocks = vs.symbols.into_iter().map(|stock| {
             Stock { venue: self, symbol: stock.symbol, name: stock.name }
@@ -316,19 +321,23 @@ impl FromStr for OrderType {
 }
 
 impl<'a> Stock<'a> {
-    fn url(&self, url: Option<&str>) -> String {
-        match url {
-            None => format!("stocks/{}", self.symbol),
-            Some(url) => format!("stocks/{}/{}", self.symbol, url),
+    fn url(&self, in_account: bool, url: Option<&str>) -> String {
+        let account = &self.venue.account.name;
+        let symbol = &self.symbol;
+        match (in_account, url) {
+            (false, None) => format!("stocks/{}", self.symbol),
+            (false, Some(url)) => format!("stocks/{}/{}", symbol, url),
+            (true, None) => format!("accounts/{}/stocks/{}", account, symbol),
+            (true, Some(url)) => format!("accounts/{}/stocks/{}/{}", account, symbol, url),
         }
     }
 
-    fn request(&self, method: Method, url: Option<&str>) -> RequestBuilder {
-        self.venue.request(method, &self.url(url))
+    fn request(&self, method: Method, in_account: bool, url: Option<&str>) -> RequestBuilder {
+        self.venue.request(method, false, &self.url(in_account, url))
     }
 
     pub fn orderbook(&self) -> Result<Orderbook> {
-        let res = try!(self.request(Method::Get, None).send());
+        let res = try!(self.request(Method::Get, false, None).send());
         let so: response::Orderbook = try!(parse_response(res));
         let ts = try!(so.ts.parse::<DateTime<UTC>>());
         let orders = Orderbook { stock: self, ts: ts, bids: so.bids, asks: so.asks };
@@ -347,25 +356,25 @@ impl<'a> Stock<'a> {
             order_type: order_type.as_str(),
         };
         let req = try!(serde_json::to_string(&req));
-        let res = try!(self.request(Method::Post, Some("orders")).body(&*req).send());
+        let res = try!(self.request(Method::Post, false, Some("orders")).body(&*req).send());
         let res: response::OrderStatus = try!(parse_response(res));
-        let order = try!(Order::new(self, res));
+        let order = try!(Order::new(self.venue, res));
         Ok(order)
     }
 
     pub fn quote(&self) -> Result<Quote> {
-        let res = try!(self.request(Method::Get, Some("quote")).send());
+        let res = try!(self.request(Method::Get, false, Some("quote")).send());
         let res: response::Quote = try!(parse_response(res));
         let quote = try!(Quote::new(self, res));
         Ok(quote)
     }
 
     pub fn orders(&self) -> Result<Vec<Order>> {
-        let res = try!(self.request(Method::Get, Some("orders")).send());
+        let res = try!(self.request(Method::Get, true, Some("orders")).send());
         let res: response::OrderStatuses = try!(parse_response(res));
         let mut orders = Vec::with_capacity(res.orders.len());
         for status in res.orders.into_iter() {
-            orders.push(try!(Order::new(self, status)));
+            orders.push(try!(Order::new(self.venue, status)));
         }
         Ok(orders)
     }
@@ -388,7 +397,8 @@ pub struct Fill {
 
 #[derive(Debug, Clone)]
 pub struct Order<'a> {
-    pub stock: &'a Stock<'a>,
+    pub venue: &'a Venue<'a>,
+    pub symbol: String,
     pub direction: Direction,
     pub original_qty: u64,
     pub qty: u64,
@@ -402,10 +412,9 @@ pub struct Order<'a> {
 }
 
 impl<'a> Order<'a> {
-    fn new(stock: &'a Stock, os: response::OrderStatus) -> Result<Self> {
-        assert_eq!(stock.symbol, os.symbol);
-        assert_eq!(stock.venue.name, os.venue);
-        assert_eq!(stock.venue.account.name, os.account);
+    fn new(venue: &'a Venue, os: response::OrderStatus) -> Result<Self> {
+        assert_eq!(venue.name, os.venue);
+        assert_eq!(venue.account.name, os.account);
         let mut fills = Vec::with_capacity(os.fills.len());
         for f in os.fills.into_iter() {
             let ts = try!(f.ts.parse::<DateTime<UTC>>());
@@ -413,7 +422,8 @@ impl<'a> Order<'a> {
             fills.push(fill);
         }
         let order = Order {
-            stock: stock,
+            venue: venue,
+            symbol: os.symbol.clone(),
             direction: try!(os.direction.parse::<Direction>()),
             original_qty: os.original_qty,
             qty: os.qty,
@@ -430,26 +440,26 @@ impl<'a> Order<'a> {
 
     fn url(&self, url: Option<&str>) -> String {
         match url {
-            None => format!("orders/{}", self.id),
-            Some(url) => format!("orders/{}/{}", self.id, url),
+            None => format!("stocks/{}/orders/{}", self.symbol, self.id),
+            Some(url) => format!("stocks/{}/orders/{}/{}", self.symbol, self.id, url),
         }
     }
 
     fn request(&self, method: Method, url: Option<&str>) -> RequestBuilder {
-        self.stock.request(method, Some(&self.url(url)))
+        self.venue.request(method, false, &self.url(url))
     }
 
     pub fn update(&mut self) -> Result<()> {
         let res = try!(self.request(Method::Get, None).send());
         let os: response::OrderStatus = try!(parse_response(res));
-        *self = try!(Order::new(self.stock, os));
+        *self = try!(Order::new(self.venue, os));
         Ok(())
     }
 
     pub fn cancel(&mut self) -> Result<()> {
         let res = try!(self.request(Method::Delete, None).send());
         let os: response::OrderStatus = try!(parse_response(res));
-        *self = try!(Order::new(self.stock, os));
+        *self = try!(Order::new(self.venue, os));
         Ok(())
     }
 }
@@ -575,5 +585,17 @@ mod tests {
         assert!(order.open);
         assert!(order.cancel().is_ok());
         assert!(!order.open);
+    }
+
+    #[test]
+    fn test_stock_orders() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let order = stock.order(100, 10, Direction::Buy, OrderType::Limit);
+        assert!(order.is_ok());
+        let orders = stock.orders().unwrap();
+        assert!(0 < orders.len());
     }
 }
