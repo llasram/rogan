@@ -16,7 +16,6 @@ use std::error;
 use std::fmt;
 use std::io;
 use std::io::Read;
-use std::mem;
 use std::result;
 use std::str::FromStr;
 
@@ -543,7 +542,7 @@ type WebSocketSender = websocket::client::sender::Sender<websocket::stream::WebS
 
 pub struct QuotesIter<'a> {
     venue: &'a Venue<'a>,
-    receiver: Option<WebSocketReceiver>,
+    receiver: WebSocketReceiver,
     sender: WebSocketSender,
 }
 
@@ -555,17 +554,13 @@ impl<'a> QuotesIter<'a> {
         try!(res.validate());
         let client = res.begin();
         let (sender, receiver) = client.split();
-        let iter = QuotesIter { venue: venue, receiver: Some(receiver), sender: sender };
+        let iter = QuotesIter { venue: venue, receiver: receiver, sender: sender };
         Ok(iter)
-    }
-
-    fn receiver(&mut self) -> &mut WebSocketReceiver {
-        self.receiver.as_mut().unwrap()
     }
 
     fn recv_quote(&mut self) -> Result<Option<Quote<'a>>> {
         loop {
-            let msg: Message = try!(self.receiver().recv_message());
+            let msg: Message = try!(self.receiver.recv_message());
             match msg.opcode {
                 MessageType::Close => {
                     try!(self.sender.send_message(&Message::close()));
@@ -576,9 +571,12 @@ impl<'a> QuotesIter<'a> {
                 },
                 MessageType::Text => {
                     let payload: &[u8] = msg.payload.borrow();
-                    let res: response::Quote = try!(serde_json::from_slice(payload));
-                    let quote = try!(Quote::new(self.venue, res));
-                    return Ok(Some(quote));
+                    let res: response::TickerTape = try!(serde_json::from_slice(payload));
+                    return match (res.ok, res.error, res.quote) {
+                        (false, Some(error), _) => Err(Error::Unknown(error)),
+                        (true, _, Some(res)) => Ok(Some(try!(Quote::new(self.venue, res)))),
+                        _ => Err(Error::Unknown("<unknown>".to_owned())),
+                    }
                 },
                 _ => (),
             }
@@ -595,13 +593,6 @@ impl<'a> Iterator for QuotesIter<'a> {
             Ok(Some(quote)) => Some(Ok(quote)),
             Err(err) => Some(Err(err)),
         }
-    }
-}
-
-impl<'a> Drop for QuotesIter<'a> {
-    fn drop(&mut self) {
-        let receiver = mem::replace(&mut self.receiver, None);
-        mem::forget(receiver);
     }
 }
 
@@ -707,6 +698,7 @@ mod tests {
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();
         let stock = venue.stock("FOOBAR").unwrap();
+        ::std::thread::sleep(::std::time::Duration::new(1, 0));
         let order = stock.order(100, 10, Direction::Buy, OrderType::Limit);
         assert!(order.is_ok());
         let orders = stock.orders().unwrap();
@@ -718,6 +710,8 @@ mod tests {
         let api = Api::new(TOKEN);
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();
-        let _ticker = venue.ticker_tape().unwrap();
+        let mut ticker = venue.ticker_tape().unwrap();
+        let quote = ticker.next().unwrap();
+        assert!(quote.is_ok());
     }
 }

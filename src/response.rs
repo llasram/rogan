@@ -80,6 +80,7 @@ pub struct OrderStatus {
 
 #[derive(Debug, Deserialize)]
 pub struct Quote {
+    #[serde(default)]
     pub ok: bool,
     pub error: Option<String>,
     pub symbol: String,
@@ -109,4 +110,11 @@ pub struct OrderStatuses {
     pub error: Option<String>,
     pub venue: String,
     pub orders: Vec<OrderStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TickerTape {
+    pub ok: bool,
+    pub error: Option<String>,
+    pub quote: Option<Quote>,
 }
