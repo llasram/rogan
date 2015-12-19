@@ -424,6 +424,10 @@ impl<'a> Stock<'a> {
     pub fn ticker_tape(&self) -> Result<QuotesIter> {
         QuotesIter::new(self.venue, &self.ws_url("tickertape"))
     }
+
+    pub fn executions(&self) -> Result<ExecutionsIter> {
+        ExecutionsIter::new(self.venue, &self.ws_url("executions"))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -836,6 +840,9 @@ mod tests {
         ::std::thread::sleep(::std::time::Duration::new(1, 0));
         let order = stock.order(100, 10, Direction::Sell, OrderType::Limit);
         assert!(order.is_ok());
+        ::std::thread::sleep(::std::time::Duration::new(1, 0));
+        let order = stock.order(100, 10, Direction::Sell, OrderType::Limit);
+        assert!(order.is_ok());
     }
 
     #[test]
@@ -865,7 +872,18 @@ mod tests {
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();
         let mut execs = venue.executions().unwrap();
-        let _exec = execs.next().unwrap().unwrap();
-        println!("{:?}", _exec);
+        let exec = execs.next().unwrap();
+        assert!(exec.is_ok());
+    }
+
+    #[test]
+    fn test_stock_executions() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let mut execs = stock.executions().unwrap();
+        let exec = execs.next().unwrap();
+        assert!(exec.is_ok());
     }
 }
