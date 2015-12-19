@@ -1,6 +1,6 @@
 [package]
-name = "stockfighter"
-version = "0.1.0"
+name = "rogan"
+version = "0.1.0-pre"
 authors = ["Marshall Bockrath-Vandegrift <llasram@gmail.com>"]
 
 [dependencies]
