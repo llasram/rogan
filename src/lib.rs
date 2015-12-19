@@ -366,6 +366,10 @@ impl<'a> Stock<'a> {
         }
     }
 
+    fn ws_url(&self) -> String {
+        format!("{}/stocks/{}", self.venue.ws_url(), self.symbol)
+    }
+
     fn request(&self, method: Method, in_account: bool, url: Option<&str>) -> RequestBuilder {
         self.venue.request(method, false, &self.url(in_account, url))
     }
@@ -411,6 +415,10 @@ impl<'a> Stock<'a> {
             orders.push(try!(Order::new(self.venue, status)));
         }
         Ok(orders)
+    }
+
+    pub fn ticker_tape(&self) -> Result<QuotesIter> {
+        QuotesIter::new(self.venue, &self.ws_url())
     }
 }
 
@@ -703,6 +711,9 @@ mod tests {
         assert!(order.is_ok());
         let orders = stock.orders().unwrap();
         assert!(0 < orders.len());
+        ::std::thread::sleep(::std::time::Duration::new(1, 0));
+        let order = stock.order(100, 10, Direction::Sell, OrderType::Limit);
+        assert!(order.is_ok());
     }
 
     #[test]
@@ -711,6 +722,17 @@ mod tests {
         let account = api.account("EXB123456").unwrap();
         let venue = account.venue("TESTEX").unwrap();
         let mut ticker = venue.ticker_tape().unwrap();
+        let quote = ticker.next().unwrap();
+        assert!(quote.is_ok());
+    }
+
+    #[test]
+    fn test_stock_ticker_tape() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let mut ticker = stock.ticker_tape().unwrap();
         let quote = ticker.next().unwrap();
         assert!(quote.is_ok());
     }
