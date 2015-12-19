@@ -235,11 +235,11 @@ impl<'a> Venue<'a> {
         }
     }
 
-    fn ws_url(&self) -> String {
+    fn ws_url(&self, url: &str) -> String {
         let base_url = &self.account.api.url;
         let account = &self.account.name;
         let venue = &self.name;
-        format!("wss://{}/ws/{}/venues/{}/tickertape", base_url, account, venue)
+        format!("wss://{}/ws/{}/venues/{}/{}", base_url, account, venue, url)
     }
 
     fn request(&self, method: Method, with_account: bool, url: &str) -> RequestBuilder {
@@ -283,7 +283,7 @@ impl<'a> Venue<'a> {
     }
 
     pub fn ticker_tape(&self) -> Result<QuotesIter> {
-        QuotesIter::new(self, &self.ws_url())
+        QuotesIter::new(self, &self.ws_url("tickertape"))
     }
 }
 
@@ -366,8 +366,8 @@ impl<'a> Stock<'a> {
         }
     }
 
-    fn ws_url(&self) -> String {
-        format!("{}/stocks/{}", self.venue.ws_url(), self.symbol)
+    fn ws_url(&self, url: &str) -> String {
+        format!("{}/stocks/{}", self.venue.ws_url(url), self.symbol)
     }
 
     fn request(&self, method: Method, in_account: bool, url: Option<&str>) -> RequestBuilder {
@@ -418,7 +418,7 @@ impl<'a> Stock<'a> {
     }
 
     pub fn ticker_tape(&self) -> Result<QuotesIter> {
-        QuotesIter::new(self.venue, &self.ws_url())
+        QuotesIter::new(self.venue, &self.ws_url("tickertape"))
     }
 }
 
