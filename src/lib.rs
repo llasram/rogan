@@ -285,6 +285,10 @@ impl<'a> Venue<'a> {
     pub fn ticker_tape(&self) -> Result<QuotesIter> {
         QuotesIter::new(self, &self.ws_url("tickertape"))
     }
+
+    pub fn executions(&self) -> Result<ExecutionsIter> {
+        ExecutionsIter::new(self, &self.ws_url("executions"))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -524,7 +528,7 @@ pub struct Quote<'a> {
 }
 
 impl<'a> Quote<'a> {
-    fn new(venue: &'a Venue, res: response::Quote) -> Result<Quote<'a>> {
+    fn new(venue: &'a Venue, res: response::Quote) -> Result<Self> {
         assert_eq!(venue.name, res.venue);
         let ts = try!(res.quote_time.parse::<DateTime<UTC>>());
         let last = match (res.last, res.last_size, res.last_trade) {
@@ -542,6 +546,72 @@ impl<'a> Quote<'a> {
             ask: QuoteState { price: res.ask, size: res.ask_size, depth: res.ask_depth },
         };
         Ok(quote)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum OrderPosition {
+    Standing,
+    Incoming,
+}
+
+impl OrderPosition {
+    pub fn as_str(&self) -> &'static str {
+        match *self {
+            OrderPosition::Standing => "standing",
+            OrderPosition::Incoming => "incoming",
+        }
+    }
+}
+
+impl FromStr for OrderPosition {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<OrderPosition> {
+        match s {
+            "standing" => Ok(OrderPosition::Standing),
+            "incoming" => Ok(OrderPosition::Incoming),
+            _ => Err(Error::Unknown(format!("{}: invalid `OrderPosition`", s))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OrderState {
+    pub id: u64,
+    pub open: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Execution<'a> {
+    pub order: Order<'a>,
+    pub fill: Fill,
+    pub direction: OrderPosition,
+    pub matched: OrderState,
+}
+
+impl<'a> Execution<'a> {
+    fn new(venue: &'a Venue, res: response::Execution) -> Result<Self> {
+        let ts = try!(res.filled_at.parse::<DateTime<UTC>>());
+        let fill = Fill { price: res.price, qty: res.filled, ts: ts };
+        let order = try!(Order::new(venue, res.order));
+        let direction = match order.id == res.standing_id {
+            true => OrderPosition::Standing,
+            false => OrderPosition::Incoming,
+        };
+        let matched_id = match direction {
+            OrderPosition::Standing => res.incoming_id,
+            OrderPosition::Incoming => res.standing_id,
+        };
+        let matched_open = !match direction {
+            OrderPosition::Standing => res.incoming_complete,
+            OrderPosition::Incoming => res.standing_complete,
+        };
+        let matched = OrderState { id: matched_id, open: matched_open };
+        let exec = Execution {
+            order: order, fill: fill, direction: direction, matched: matched,
+        };
+        Ok(exec)
     }
 }
 
@@ -599,6 +669,58 @@ impl<'a> Iterator for QuotesIter<'a> {
         match self.recv_quote() {
             Ok(None) => None,
             Ok(Some(quote)) => Some(Ok(quote)),
+            Err(err) => Some(Err(err)),
+        }
+    }
+}
+
+pub struct ExecutionsIter<'a> {
+    venue: &'a Venue<'a>,
+    receiver: WebSocketReceiver,
+    sender: WebSocketSender,
+}
+
+impl<'a> ExecutionsIter<'a> {
+    fn new(venue: &'a Venue, url: &str) -> Result<ExecutionsIter<'a>> {
+        let url =  websocket::client::request::Url::parse(url).unwrap();
+        let req = try!(websocket::Client::connect(url));
+        let res = try!(req.send());
+        try!(res.validate());
+        let client = res.begin();
+        let (sender, receiver) = client.split();
+        let iter = ExecutionsIter { venue: venue, receiver: receiver, sender: sender };
+        Ok(iter)
+    }
+
+    fn recv_execution(&mut self) -> Result<Option<Execution<'a>>> {
+        loop {
+            let msg: Message = try!(self.receiver.recv_message());
+            match msg.opcode {
+                MessageType::Close => {
+                    try!(self.sender.send_message(&Message::close()));
+                    return Ok(None);
+                },
+                MessageType::Ping => {
+                    try!(self.sender.send_message(&Message::pong(msg.payload)));
+                },
+                MessageType::Text => {
+                    let payload: &[u8] = msg.payload.borrow();
+                    let res: response::Execution = try!(serde_json::from_slice(payload));
+                    return Ok(Some(try!(Execution::new(self.venue, res))));
+                },
+                _ => (),
+            }
+        }
+    }
+}
+
+impl<'a> Iterator for ExecutionsIter<'a> {
+    type Item = Result<Execution<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.recv_execution() {
+            Ok(None) => None,
+            Ok(Some(exec)) => Some(Ok(exec)),
             Err(err) => Some(Err(err)),
         }
     }
@@ -735,5 +857,15 @@ mod tests {
         let mut ticker = stock.ticker_tape().unwrap();
         let quote = ticker.next().unwrap();
         assert!(quote.is_ok());
+    }
+
+    #[test]
+    fn test_venue_executions() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let mut execs = venue.executions().unwrap();
+        let _exec = execs.next().unwrap().unwrap();
+        println!("{:?}", _exec);
     }
 }

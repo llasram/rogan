@@ -118,3 +118,25 @@ pub struct TickerTape {
     pub error: Option<String>,
     pub quote: Option<Quote>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct Execution {
+    pub ok: bool,
+    pub error: Option<String>,
+    pub account: String,
+    pub venue: String,
+    pub symbol: String,
+    pub order: OrderStatus,
+    #[serde(rename="standingId")]
+    pub standing_id: u64,
+    #[serde(rename="incomingId")]
+    pub incoming_id: u64,
+    pub price: u64,
+    pub filled: u64,
+    #[serde(rename="filledAt")]
+    pub filled_at: String,
+    #[serde(rename="standingComplete")]
+    pub standing_complete: bool,
+    #[serde(rename="incomingComplete")]
+    pub incoming_complete: bool,
+}
