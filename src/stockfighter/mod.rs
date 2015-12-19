@@ -729,7 +729,7 @@ impl<'a> Iterator for ExecutionsIter<'a> {
 mod tests {
     use super::*;
 
-    static TOKEN: &'static str = "1193b20a8167398943e7bf22572e480fef59da47";
+    static TOKEN: &'static str = "<valid token necessary for tests to pass>";
 
     #[test]
     fn test_heartbeat() {
