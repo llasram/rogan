@@ -14,7 +14,9 @@ use chrono;
 use chrono::{DateTime, UTC};
 use hyper;
 use hyper::client::{Client, RequestBuilder, Response};
+use hyper::header::{Headers, UserAgent, Accept, qitem};
 use hyper::method::Method;
+use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
 use hyper::status::StatusCode;
 use serde::Deserialize;
 use serde_json;
@@ -171,8 +173,12 @@ impl Api {
     }
 
     fn request(&self, method: Method, url: &str) -> RequestBuilder {
-        let auth = XStarfighterAuthorization(self.token.clone());
-        self.client.request(method, &self.url(url)).header(auth)
+        let mut headers = Headers::new();
+        headers.set(UserAgent(concat!("rogan", env!("CARGO_PKG_VERSION")).to_owned()));
+        headers.set(Accept(vec![qitem(Mime(TopLevel::Application, SubLevel::Json,
+                                           vec![(Attr::Charset, Value::Utf8)]))]));
+        headers.set(XStarfighterAuthorization(self.token.clone()));
+        self.client.request(method, &self.url(url)).headers(headers)
     }
 
     pub fn heartbeat(&self) -> Result<()> {
