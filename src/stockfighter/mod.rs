@@ -546,6 +546,25 @@ impl<'a> Quote<'a> {
         };
         Ok(quote)
     }
+
+    fn url(&self) -> String {
+        format!("stocks/{}/quote", self.symbol)
+    }
+
+    fn request(&self, method: Method) -> RequestBuilder {
+        self.venue.request(method, false, &self.url())
+    }
+
+    pub fn stock(&self) -> Result<Stock> {
+        self.venue.stock(&self.symbol)
+    }
+
+    pub fn update(&mut self) -> Result<()> {
+        let res = try!(self.request(Method::Get).send());
+        let res: response::Quote = try!(parse_response(res));
+        *self = try!(Quote::new(self.venue, res));
+        Ok(())
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -783,6 +802,19 @@ mod tests {
         let stock = venue.stock("FOOBAR").unwrap();
         let quote = stock.quote();
         assert!(quote.is_ok());
+    }
+
+    #[test]
+    fn test_stock_quote_update() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let mut quote = stock.quote().unwrap();
+        let ts = quote.ts;
+        ::std::thread::sleep(::std::time::Duration::new(1, 0));
+        quote.update().unwrap();
+        assert!(ts < quote.ts);
     }
 
     #[test]
