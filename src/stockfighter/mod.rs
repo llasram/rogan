@@ -9,6 +9,7 @@ use std::io;
 use std::io::Read;
 use std::result;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use chrono;
 use chrono::{DateTime, UTC};
@@ -123,10 +124,11 @@ pub type Result<T> = result::Result<T, Error>;
 
 static DEFAULT_API_URL: &'static str = "api.stockfighter.io/ob/api";
 
+#[derive(Clone)]
 pub struct Api {
     url: String,
     token: String,
-    client: Client,
+    client: Arc<Client>,
 }
 
 impl fmt::Debug for Api {
@@ -164,7 +166,7 @@ impl Api {
         Api {
             url: DEFAULT_API_URL.to_owned(),
             token: token.to_owned(),
-            client: hyper::Client::new()
+            client: Arc::new(hyper::Client::new()),
         }
     }
 
@@ -193,35 +195,35 @@ impl Api {
 
     pub fn account(&self, name: &str) -> Result<Account> {
         let name = name.to_owned();
-        let account = Account { api: self, name: name };
+        let account = Account { api: self.clone(), name: name };
         Ok(account)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Account<'a> {
-    api: &'a Api,
+pub struct Account {
+    api: Api,
     pub name: String,
 }
 
-impl<'a> Account<'a> {
+impl Account {
     pub fn request(&self, method: Method, url: &str) -> RequestBuilder {
         self.api.request(method, url)
     }
 
     pub fn venue(&self, name: &str) -> Result<Venue> {
-        Venue::new(self, name)
+        Venue::new(self.clone(), name)
     }
 }
 
-#[derive(Debug)]
-pub struct Venue<'a> {
-    account: &'a Account<'a>,
+#[derive(Debug, Clone)]
+pub struct Venue {
+    account: Account,
     pub name: String,
 }
 
-impl<'a> Venue<'a> {
-    fn new(account: &'a Account, name: &str) -> Result<Self> {
+impl Venue {
+    fn new(account: Account, name: &str) -> Result<Self> {
         let venue = Venue { account: account, name: name.to_owned() };
         try!(venue.heartbeat());
         Ok(venue)
@@ -261,7 +263,7 @@ impl<'a> Venue<'a> {
         let res = try!(self.request(Method::Get, false, "stocks").send());
         let vs: response::VenueStocks = try!(parse_response(res));
         let stocks = vs.symbols.into_iter().map(|stock| {
-            Stock { venue: self, symbol: stock.symbol, name: stock.name }
+            Stock { venue: self.clone(), symbol: stock.symbol, name: stock.name }
         }).collect::<Vec<_>>();
         Ok(stocks)
     }
@@ -269,7 +271,7 @@ impl<'a> Venue<'a> {
     pub fn stock(&self, symbol: &str) -> Result<Stock> {
         let symbol = symbol.to_owned();
         let name = "<unknown>".to_owned();
-        let stock = Stock { venue: self, symbol: symbol, name: name };
+        let stock = Stock { venue: self.clone(), symbol: symbol, name: name };
         Ok(stock)
     }
 
@@ -278,23 +280,23 @@ impl<'a> Venue<'a> {
         let res: response::OrderStatuses = try!(parse_response(res));
         let mut orders = Vec::with_capacity(res.orders.len());
         for status in res.orders.into_iter() {
-            orders.push(try!(Order::new(self, status)));
+            orders.push(try!(Order::new(self.clone(), status)));
         }
         Ok(orders)
     }
 
     pub fn ticker_tape(&self) -> Result<QuotesIter> {
-        QuotesIter::new(self, &self.ws_url("tickertape"))
+        QuotesIter::new(self.clone(), &self.ws_url("tickertape"))
     }
 
     pub fn executions(&self) -> Result<ExecutionsIter> {
-        ExecutionsIter::new(self, &self.ws_url("executions"))
+        ExecutionsIter::new(self.clone(), &self.ws_url("executions"))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Stock<'a> {
-    pub venue: &'a Venue<'a>,
+pub struct Stock {
+    pub venue: Venue,
     pub symbol: String,
     pub name: String,
 }
@@ -359,7 +361,7 @@ impl FromStr for OrderType {
     }
 }
 
-impl<'a> Stock<'a> {
+impl Stock {
     fn url(&self, in_account: bool, url: Option<&str>) -> String {
         let account = &self.venue.account.name;
         let symbol = &self.symbol;
@@ -383,7 +385,7 @@ impl<'a> Stock<'a> {
         let res = try!(self.request(Method::Get, false, None).send());
         let so: response::Orderbook = try!(parse_response(res));
         let ts = try!(so.ts.parse::<DateTime<UTC>>());
-        let orders = Orderbook { stock: self, ts: ts, bids: so.bids, asks: so.asks };
+        let orders = Orderbook { stock: self.clone(), ts: ts, bids: so.bids, asks: so.asks };
         Ok(orders)
     }
 
@@ -401,14 +403,14 @@ impl<'a> Stock<'a> {
         let req = try!(serde_json::to_string(&req));
         let res = try!(self.request(Method::Post, false, Some("orders")).body(&*req).send());
         let res: response::OrderStatus = try!(parse_response(res));
-        let order = try!(Order::new(self.venue, res));
+        let order = try!(Order::new(self.venue.clone(), res));
         Ok(order)
     }
 
     pub fn quote(&self) -> Result<Quote> {
         let res = try!(self.request(Method::Get, false, Some("quote")).send());
         let res: response::Quote = try!(parse_response(res));
-        let quote = try!(Quote::new(self.venue, res));
+        let quote = try!(Quote::new(self.venue.clone(), res));
         Ok(quote)
     }
 
@@ -417,23 +419,23 @@ impl<'a> Stock<'a> {
         let res: response::OrderStatuses = try!(parse_response(res));
         let mut orders = Vec::with_capacity(res.orders.len());
         for status in res.orders.into_iter() {
-            orders.push(try!(Order::new(self.venue, status)));
+            orders.push(try!(Order::new(self.venue.clone(), status)));
         }
         Ok(orders)
     }
 
     pub fn ticker_tape(&self) -> Result<QuotesIter> {
-        QuotesIter::new(self.venue, &self.ws_url("tickertape"))
+        QuotesIter::new(self.venue.clone(), &self.ws_url("tickertape"))
     }
 
     pub fn executions(&self) -> Result<ExecutionsIter> {
-        ExecutionsIter::new(self.venue, &self.ws_url("executions"))
+        ExecutionsIter::new(self.venue.clone(), &self.ws_url("executions"))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Orderbook<'a> {
-    pub stock: &'a Stock<'a>,
+pub struct Orderbook {
+    pub stock: Stock,
     pub ts: DateTime<UTC>,
     pub bids: Vec<StockOrderbook>,
     pub asks: Vec<StockOrderbook>,
@@ -447,8 +449,8 @@ pub struct Fill {
 }
 
 #[derive(Debug, Clone)]
-pub struct Order<'a> {
-    pub venue: &'a Venue<'a>,
+pub struct Order {
+    pub venue: Venue,
     pub symbol: String,
     pub direction: Direction,
     pub original_qty: u64,
@@ -462,8 +464,8 @@ pub struct Order<'a> {
     pub open: bool,
 }
 
-impl<'a> Order<'a> {
-    fn new(venue: &'a Venue, os: response::OrderStatus) -> Result<Self> {
+impl Order {
+    fn new(venue: Venue, os: response::OrderStatus) -> Result<Self> {
         assert_eq!(venue.name, os.venue);
         assert_eq!(venue.account.name, os.account);
         let mut fills = Vec::with_capacity(os.fills.len());
@@ -503,14 +505,14 @@ impl<'a> Order<'a> {
     pub fn update(&mut self) -> Result<()> {
         let res = try!(self.request(Method::Get, None).send());
         let os: response::OrderStatus = try!(parse_response(res));
-        *self = try!(Order::new(self.venue, os));
+        *self = try!(Order::new(self.venue.clone(), os));
         Ok(())
     }
 
     pub fn cancel(&mut self) -> Result<()> {
         let res = try!(self.request(Method::Delete, None).send());
         let os: response::OrderStatus = try!(parse_response(res));
-        *self = try!(Order::new(self.venue, os));
+        *self = try!(Order::new(self.venue.clone(), os));
         Ok(())
     }
 }
@@ -523,8 +525,8 @@ pub struct QuoteState {
 }
 
 #[derive(Debug, Clone)]
-pub struct Quote<'a> {
-    pub venue: &'a Venue<'a>,
+pub struct Quote {
+    pub venue: Venue,
     pub symbol: String,
     pub ts: DateTime<UTC>,
     pub bid: QuoteState,
@@ -532,8 +534,8 @@ pub struct Quote<'a> {
     pub last: Option<Fill>,
 }
 
-impl<'a> Quote<'a> {
-    fn new(venue: &'a Venue, res: response::Quote) -> Result<Self> {
+impl Quote {
+    fn new(venue: Venue, res: response::Quote) -> Result<Self> {
         assert_eq!(venue.name, res.venue);
         let ts = try!(res.quote_time.parse::<DateTime<UTC>>());
         let last = match (res.last, res.last_size, res.last_trade) {
@@ -568,7 +570,7 @@ impl<'a> Quote<'a> {
     pub fn update(&mut self) -> Result<()> {
         let res = try!(self.request(Method::Get).send());
         let res: response::Quote = try!(parse_response(res));
-        *self = try!(Quote::new(self.venue, res));
+        *self = try!(Quote::new(self.venue.clone(), res));
         Ok(())
     }
 }
@@ -607,15 +609,15 @@ pub struct OrderState {
 }
 
 #[derive(Debug, Clone)]
-pub struct Execution<'a> {
-    pub order: Order<'a>,
+pub struct Execution {
+    pub order: Order,
     pub fill: Fill,
     pub direction: OrderPosition,
     pub matched: OrderState,
 }
 
-impl<'a> Execution<'a> {
-    fn new(venue: &'a Venue, res: response::Execution) -> Result<Self> {
+impl Execution {
+    fn new(venue: Venue, res: response::Execution) -> Result<Self> {
         let ts = try!(res.filled_at.parse::<DateTime<UTC>>());
         let fill = Fill { price: res.price, qty: res.filled, ts: ts };
         let order = try!(Order::new(venue, res.order));
@@ -642,14 +644,14 @@ impl<'a> Execution<'a> {
 type WebSocketReceiver = websocket::client::receiver::Receiver<websocket::stream::WebSocketStream>;
 type WebSocketSender = websocket::client::sender::Sender<websocket::stream::WebSocketStream>;
 
-pub struct QuotesIter<'a> {
-    venue: &'a Venue<'a>,
+pub struct QuotesIter {
+    venue: Venue,
     receiver: WebSocketReceiver,
     sender: WebSocketSender,
 }
 
-impl<'a> QuotesIter<'a> {
-    fn new(venue: &'a Venue, url: &str) -> Result<QuotesIter<'a>> {
+impl QuotesIter {
+    fn new(venue: Venue, url: &str) -> Result<QuotesIter> {
         let url =  websocket::client::request::Url::parse(url).unwrap();
         let req = try!(websocket::Client::connect(url));
         let res = try!(req.send());
@@ -660,7 +662,7 @@ impl<'a> QuotesIter<'a> {
         Ok(iter)
     }
 
-    fn recv_quote(&mut self) -> Result<Option<Quote<'a>>> {
+    fn recv_quote(&mut self) -> Result<Option<Quote>> {
         loop {
             let msg: Message = try!(self.receiver.recv_message());
             match msg.opcode {
@@ -676,7 +678,8 @@ impl<'a> QuotesIter<'a> {
                     let res: response::TickerTape = try!(serde_json::from_slice(payload));
                     return match (res.ok, res.error, res.quote) {
                         (false, Some(error), _) => Err(Error::Unknown(error)),
-                        (true, _, Some(res)) => Ok(Some(try!(Quote::new(self.venue, res)))),
+                        (true, _, Some(res)) =>
+                            Ok(Some(try!(Quote::new(self.venue.clone(), res)))),
                         _ => Err(Error::Unknown("<unknown>".to_owned())),
                     }
                 },
@@ -686,8 +689,8 @@ impl<'a> QuotesIter<'a> {
     }
 }
 
-impl<'a> Iterator for QuotesIter<'a> {
-    type Item = Result<Quote<'a>>;
+impl Iterator for QuotesIter {
+    type Item = Result<Quote>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.recv_quote() {
@@ -698,14 +701,14 @@ impl<'a> Iterator for QuotesIter<'a> {
     }
 }
 
-pub struct ExecutionsIter<'a> {
-    venue: &'a Venue<'a>,
+pub struct ExecutionsIter {
+    venue: Venue,
     receiver: WebSocketReceiver,
     sender: WebSocketSender,
 }
 
-impl<'a> ExecutionsIter<'a> {
-    fn new(venue: &'a Venue, url: &str) -> Result<ExecutionsIter<'a>> {
+impl ExecutionsIter {
+    fn new(venue: Venue, url: &str) -> Result<ExecutionsIter> {
         let url =  websocket::client::request::Url::parse(url).unwrap();
         let req = try!(websocket::Client::connect(url));
         let res = try!(req.send());
@@ -716,7 +719,7 @@ impl<'a> ExecutionsIter<'a> {
         Ok(iter)
     }
 
-    fn recv_execution(&mut self) -> Result<Option<Execution<'a>>> {
+    fn recv_execution(&mut self) -> Result<Option<Execution>> {
         loop {
             let msg: Message = try!(self.receiver.recv_message());
             match msg.opcode {
@@ -730,7 +733,7 @@ impl<'a> ExecutionsIter<'a> {
                 MessageType::Text => {
                     let payload: &[u8] = msg.payload.borrow();
                     let res: response::Execution = try!(serde_json::from_slice(payload));
-                    return Ok(Some(try!(Execution::new(self.venue, res))));
+                    return Ok(Some(try!(Execution::new(self.venue.clone(), res))));
                 },
                 _ => (),
             }
@@ -738,8 +741,8 @@ impl<'a> ExecutionsIter<'a> {
     }
 }
 
-impl<'a> Iterator for ExecutionsIter<'a> {
-    type Item = Result<Execution<'a>>;
+impl Iterator for ExecutionsIter {
+    type Item = Result<Execution>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.recv_execution() {
