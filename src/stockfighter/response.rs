@@ -1,10 +1,4 @@
 #[derive(Deserialize, Debug)]
-pub struct Error {
-    pub ok: bool,
-    pub error: String,
-}
-
-#[derive(Deserialize, Debug)]
 pub struct Heartbeat {
     pub ok: bool,
     pub error: Option<String>,

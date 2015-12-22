@@ -7,4 +7,8 @@ extern crate serde;
 extern crate serde_json;
 extern crate websocket;
 
+mod common;
+pub mod gm;
 pub mod stockfighter;
+
+pub use common::{Error, Result};
