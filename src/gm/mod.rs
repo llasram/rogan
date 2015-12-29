@@ -9,7 +9,7 @@ use hyper::method::Method;
 use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
 
 use common::{XStarfighterAuthorization, parse_response, Result, Error};
-pub use gm::response::{Status, StatusDetails, StatusFlash};
+pub use gm::response::{Status, StatusDetails, StatusFlash, StatusState};
 
 static DEFAULT_API_URL: &'static str = "www.stockfighter.io/gm";
 
@@ -51,7 +51,18 @@ impl Api {
     pub fn start(&self, level: &str) -> Result<Instance> {
         let res = try!(self.request(Method::Post, &format!("levels/{}", level)).send());
         let res: response::Instance = try!(parse_response(res));
-        Ok(Instance::new(self.clone(), res))
+        let mut inst = Instance::new(self.clone(), res);
+        let status = try!(inst.status());
+        if status.trading_day() > 0 { try!(inst.restart()); }
+        Ok(inst)
+    }
+
+    pub fn resume(&self, level: &str) -> Result<Instance> {
+        let res = try!(self.request(Method::Post, &format!("levels/{}", level)).send());
+        let res: response::Instance = try!(parse_response(res));
+        let mut inst = Instance::new(self.clone(), res);
+        try!(inst.resume());
+        Ok(inst)
     }
 }
 
