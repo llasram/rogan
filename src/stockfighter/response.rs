@@ -95,7 +95,7 @@ pub struct Quote {
     #[serde(rename="lastTrade")]
     pub last_trade: Option<String>,
     #[serde(rename="quoteTime")]
-    pub quote_time: String,
+    pub quote_time: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

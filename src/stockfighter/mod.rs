@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{DateTime, UTC};
+use chrono::offset::TimeZone;
 use hyper::client::{Client, RequestBuilder};
 use hyper::header::{Headers, UserAgent, Accept, qitem};
 use hyper::method::Method;
@@ -159,11 +160,11 @@ impl Venue {
     }
 
     pub fn ticker_tape(&self) -> Result<QuotesIter> {
-        QuotesIter::new(self.clone(), &self.ws_url("tickertape"))
+        QuotesIter::new(self.clone(), self.ws_url("tickertape"))
     }
 
     pub fn executions(&self) -> Result<ExecutionsIter> {
-        ExecutionsIter::new(self.clone(), &self.ws_url("executions"))
+        ExecutionsIter::new(self.clone(), self.ws_url("executions"))
     }
 }
 
@@ -298,11 +299,11 @@ impl Stock {
     }
 
     pub fn ticker_tape(&self) -> Result<QuotesIter> {
-        QuotesIter::new(self.venue.clone(), &self.ws_url("tickertape"))
+        QuotesIter::new(self.venue.clone(), self.ws_url("tickertape"))
     }
 
     pub fn executions(&self) -> Result<ExecutionsIter> {
-        ExecutionsIter::new(self.venue.clone(), &self.ws_url("executions"))
+        ExecutionsIter::new(self.venue.clone(), self.ws_url("executions"))
     }
 }
 
@@ -410,7 +411,9 @@ pub struct Quote {
 impl Quote {
     fn new(venue: Venue, res: response::Quote) -> Result<Self> {
         assert_eq!(venue.name, res.venue);
-        let ts = try!(res.quote_time.parse::<DateTime<UTC>>());
+        let ts = try!(res.quote_time.map_or(Ok(UTC.timestamp(0, 0)), |ts| {
+            ts.parse::<DateTime<UTC>>()
+        }));
         let last = match (res.last, res.last_size, res.last_trade) {
             (Some(price), Some(qty), Some(ts)) => {
                 let ts = try!(ts.parse::<DateTime<UTC>>());
@@ -519,20 +522,26 @@ type WebSocketSender = websocket::client::sender::Sender<websocket::stream::WebS
 
 pub struct QuotesIter {
     venue: Venue,
+    url: String,
     receiver: WebSocketReceiver,
     sender: WebSocketSender,
 }
 
 impl QuotesIter {
-    fn new(venue: Venue, url: &str) -> Result<QuotesIter> {
-        let url =  websocket::client::request::Url::parse(url).unwrap();
-        let req = try!(websocket::Client::connect(url));
+    fn new(venue: Venue, url: String) -> Result<Self> {
+        let wsurl =  websocket::client::request::Url::parse(&url).unwrap();
+        let req = try!(websocket::Client::connect(wsurl));
         let res = try!(req.send());
         try!(res.validate());
         let client = res.begin();
         let (sender, receiver) = client.split();
-        let iter = QuotesIter { venue: venue, receiver: receiver, sender: sender };
+        let iter = QuotesIter { venue: venue, url: url, receiver: receiver, sender: sender };
         Ok(iter)
+    }
+
+    pub fn reconnect(&mut self) -> Result<()> {
+        *self = try!(QuotesIter::new(self.venue.clone(), self.url.clone()));
+        Ok(())
     }
 
     fn recv_quote(&mut self) -> Result<Option<Quote>> {
@@ -576,20 +585,26 @@ impl Iterator for QuotesIter {
 
 pub struct ExecutionsIter {
     venue: Venue,
+    url: String,
     receiver: WebSocketReceiver,
     sender: WebSocketSender,
 }
 
 impl ExecutionsIter {
-    fn new(venue: Venue, url: &str) -> Result<ExecutionsIter> {
-        let url =  websocket::client::request::Url::parse(url).unwrap();
-        let req = try!(websocket::Client::connect(url));
+    fn new(venue: Venue, url: String) -> Result<ExecutionsIter> {
+        let wsurl =  websocket::client::request::Url::parse(&url).unwrap();
+        let req = try!(websocket::Client::connect(wsurl));
         let res = try!(req.send());
         try!(res.validate());
         let client = res.begin();
         let (sender, receiver) = client.split();
-        let iter = ExecutionsIter { venue: venue, receiver: receiver, sender: sender };
+        let iter = ExecutionsIter { venue: venue, url: url, receiver: receiver, sender: sender };
         Ok(iter)
+    }
+
+    pub fn reconnect(&mut self) -> Result<()> {
+        *self = try!(ExecutionsIter::new(self.venue.clone(), self.url.clone()));
+        Ok(())
     }
 
     fn recv_execution(&mut self) -> Result<Option<Execution>> {
