@@ -305,6 +305,14 @@ impl Stock {
     pub fn executions(&self) -> Result<ExecutionsIter> {
         ExecutionsIter::new(self.venue.clone(), self.ws_url("executions"))
     }
+
+    pub fn cancel_order(&self, id: u64) -> Result<Order> {
+        let url = format!("orders/{}", id);
+        let res = try!(self.request(Method::Delete, false, Some(&url)).send());
+        let res: response::OrderStatus = try!(parse_response(res));
+        let order = try!(Order::new(self.venue.clone(), res));
+        Ok(order)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -739,6 +747,21 @@ mod tests {
     }
 
     #[test]
+    fn test_stock_stock_order_cancel() {
+        let api = Api::new(TOKEN);
+        let account = api.account("EXB123456").unwrap();
+        let venue = account.venue("TESTEX").unwrap();
+        let stock = venue.stock("FOOBAR").unwrap();
+        let order = stock.order(100, 10, Direction::Buy, OrderType::Limit).unwrap();
+        assert!(order.open);
+        let order1 = stock.cancel_order(order.id);
+        assert!(order1.is_ok());
+        let order1 = order1.unwrap();
+        assert_eq!(order1.id, order.id);
+        assert!(!order1.open);
+    }
+
+    #[test]
     fn test_venue_orders() {
         let api = Api::new(TOKEN);
         let account = api.account("EXB123456").unwrap();
@@ -761,10 +784,10 @@ mod tests {
         assert!(order.is_ok());
         let orders = stock.orders().unwrap();
         assert!(0 < orders.len());
-        ::std::thread::sleep(::std::time::Duration::new(1, 0));
+        ::std::thread::sleep(::std::time::Duration::new(3, 0));
         let order = stock.order(100, 10, Direction::Sell, OrderType::Limit);
         assert!(order.is_ok());
-        ::std::thread::sleep(::std::time::Duration::new(1, 0));
+        ::std::thread::sleep(::std::time::Duration::new(3, 0));
         let order = stock.order(100, 10, Direction::Sell, OrderType::Limit);
         assert!(order.is_ok());
     }
