@@ -86,7 +86,11 @@ impl Account {
     }
 
     pub fn venue(&self, name: &str) -> Result<Venue> {
-        Venue::new(self.clone(), name)
+        Venue::new(self.clone(), name, true)
+    }
+
+    pub fn venue_unchecked(&self, name: &str) -> Result<Venue> {
+        Venue::new(self.clone(), name, false)
     }
 }
 
@@ -97,9 +101,9 @@ pub struct Venue {
 }
 
 impl Venue {
-    fn new(account: Account, name: &str) -> Result<Self> {
+    fn new(account: Account, name: &str, check: bool) -> Result<Self> {
         let venue = Venue { account: account, name: name.to_owned() };
-        try!(venue.heartbeat());
+        if check { try!(venue.heartbeat()); }
         Ok(venue)
     }
 
