@@ -1,15 +1,19 @@
+mod request;
 mod response;
 
 use std::fmt;
+use std::io::Read;
 use std::sync::Arc;
 
 use hyper::client::{Client, RequestBuilder};
 use hyper::header::{Headers, UserAgent, Accept, qitem};
 use hyper::method::Method;
 use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
+use serde_json;
 
 use common::{XStarfighterAuthorization, parse_response, Result, Error};
 pub use gm::response::{Status, StatusDetails, StatusFlash, StatusState};
+pub use gm::request::Evidence6;
 
 static DEFAULT_API_URL: &'static str = "www.stockfighter.io/gm";
 
@@ -122,6 +126,14 @@ impl Instance {
     pub fn status(&self) -> Result<Status> {
         let res = try!(self.request(Method::Get, None).send());
         Ok(try!(parse_response(res)))
+    }
+
+    pub fn judge6(&self, evidence: Evidence6) -> Result<String> {
+        let req = try!(serde_json::to_string(&evidence));
+        let mut res = try!(self.request(Method::Post, Some("judge")).body(&*req).send());
+        let mut body = String::new();
+        try!(res.read_to_string(&mut body));
+        Ok(body)
     }
 }
 
